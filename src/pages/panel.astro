@@ -1,0 +1,401 @@
+---
+import '../styles/global.css';
+import { latestRelease, listReleases, ensureAdminSeed } from '../lib/db';
+import type { Release } from '../lib/db';
+
+// El middleware ya garantiza sesión; por si el bootstrap no corrió aún (base recién importada).
+await ensureAdminSeed();
+
+const session = Astro.locals.session!;
+
+let current: Release | null = null;
+let releases: Release[] = [];
+let dbError = false;
+try {
+  current = await latestRelease();
+  releases = await listReleases(30);
+} catch {
+  dbError = true;
+}
+
+const currentName = current?.version_name ?? '1.0';
+const currentCode = current?.version_code ?? 1;
+
+// Sugerencias: siguiente parche + siguiente code.
+const parts = currentName.split('.');
+parts[parts.length - 1] = String((parseInt(parts[parts.length - 1] || '0', 10) || 0) + 1);
+const suggestName = parts.join('.');
+const suggestCode = currentCode + 1;
+
+function fmtSize(bytes: number): string {
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+  return bytes + ' B';
+}
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Panel · Sleppify Updates</title>
+  </head>
+  <body>
+    <div class="ambient"><span></span><span></span><span></span></div>
+
+    <header class="topbar">
+      <div class="brand">Sleppify <span>Updates</span></div>
+      <div class="topbar-right">
+        <span class="chip-user"><span class="dot"></span>{session.name}</span>
+        <a class="btn btn-ghost" href="/logout">Salir</a>
+      </div>
+    </header>
+
+    <main class="panel-grid">
+      <!-- Publicar -->
+      <section class="card">
+        <div class="micro-label">Publicar</div>
+        <h2>Nueva versión</h2>
+        <p class="muted small">
+          Publicada actualmente: <strong>{currentName}</strong> (code {currentCode})
+          {dbError && <span class="badge badge-req">base sin conexión</span>}
+        </p>
+
+        <form id="publishForm">
+          <div class="form-section">Versión</div>
+          <div class="row2">
+            <label
+              >Versión (visible)
+              <input
+                type="text"
+                name="version_name"
+                id="inVersion"
+                value={suggestName}
+                pattern="[0-9]+(\.[0-9]+)*"
+                required
+              />
+              <div class="field-error" id="errVersion"></div>
+            </label>
+            <label
+              >Version code (entero, debe subir)
+              <input
+                type="number"
+                name="version_code"
+                id="inCode"
+                min={currentCode + 1}
+                value={suggestCode}
+                required
+              />
+              <div class="field-error" id="errCode"></div>
+            </label>
+          </div>
+
+          <div class="form-section form-section-flex">
+            <span>Mensaje</span>
+            <label
+              class="mandatory-toggle"
+              title='Si está activada, el diálogo no tiene "Más tarde" y no se puede cerrar tocando fuera.'
+            >
+              <span id="mandatoryHint">Obligatoria</span>
+              <span class="switch">
+                <input type="checkbox" name="mandatory" id="inMandatory" checked />
+                <span class="track"></span><span class="knob"></span>
+              </span>
+            </label>
+          </div>
+          <label
+            >Título del popup en la app (editable)
+            <input
+              type="text"
+              name="dialog_title"
+              id="inTitle"
+              maxlength="120"
+              value="🔥 NUEVA VERSIÓN DISPONIBLE"
+            />
+            <div class="field-hint">Es el encabezado de la ventana de actualización en el teléfono.</div>
+          </label>
+
+          <label
+            >Novedades (una línea por punto; empieza con "- " para viñeta)
+            <textarea
+              name="notes"
+              id="inNotes"
+              rows="5"
+              placeholder="- Nuevo diseño de radios&#10;- Corrección de errores"></textarea>
+            <div class="field-error" id="errNotes"></div>
+          </label>
+
+          <div class="form-section">Archivo</div>
+          <label class="file-label"
+            >APK
+            <input type="file" name="apk" id="inApk" accept=".apk" required />
+            <span class="file-face" id="fileFace">Arrastra o elige el archivo .apk…</span>
+          </label>
+
+          <div class="upload-zone" id="uploadZone" hidden>
+            <div class="progress-track"><div class="progress-fill" id="upFill"></div></div>
+            <div class="progress-label" id="upLabel">0%</div>
+          </div>
+
+          <div class="error" id="pubError" hidden></div>
+          <div class="success" id="pubOk" hidden></div>
+
+          <button class="btn btn-primary btn-big" type="submit" id="btnPublish">🚀 Publicar versión</button>
+        </form>
+      </section>
+
+      <!-- Vista previa 1:1 de la ventana de la app -->
+      <section class="card preview-col">
+        <div class="micro-label">Vista previa</div>
+        <h2>Así se verá en la app</h2>
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="phone-notch"></div>
+            <div class="update-card">
+              <div class="update-head">
+                <div class="update-title" id="pvTitle">🔥 NUEVA VERSIÓN DISPONIBLE</div>
+                <div class="version-pill" id="pvVersion">{suggestName}</div>
+              </div>
+              <div class="update-divider"></div>
+              <div class="update-notes-head">NOVEDADES</div>
+              <ul class="update-notes" id="pvNotes"><li class="muted">Escribe las novedades…</li></ul>
+              <div class="update-actions" id="pvActions">
+                <button class="btn-later" id="pvLater" type="button" hidden>Más tarde</button>
+                <button class="btn-accent" id="pvBtn" type="button">Actualizar</button>
+              </div>
+              <div class="pv-progress" id="pvProgressWrap" hidden>
+                <div class="progress-track"><div class="progress-fill" id="pvFill"></div></div>
+                <div class="progress-label" id="pvLabel">0%</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="muted small center" style="margin-top:14px">
+          Así se ve el diálogo flotando sobre la app (obligatoria: sin "Más tarde" ni cierre al tocar
+          fuera). Toca "Actualizar" para simular la descarga.
+        </p>
+      </section>
+
+      <!-- Historial -->
+      <section class="card wide">
+        <div class="micro-label">Registro</div>
+        <h2>Historial de versiones</h2>
+        {
+          releases.length === 0 ? (
+            <div class="history-empty">Todavía no hay versiones registradas en la base.</div>
+          ) : (
+            <div class="history-wrap">
+              <table class="history">
+                <thead>
+                  <tr>
+                    <th>Versión</th>
+                    <th>Tipo</th>
+                    <th>Novedades</th>
+                    <th>APK</th>
+                    <th>Fecha</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {releases.map((r, i) => (
+                    <tr class={i === 0 ? 'is-current' : ''}>
+                      <td>
+                        <div class="hv-version">{r.version_name}</div>
+                        <div class="hv-code">code {r.version_code}</div>
+                      </td>
+                      <td>
+                        <div class="hv-badges">
+                          {i === 0 && <span class="badge badge-current">actual</span>}
+                          {r.mandatory === 1 ? (
+                            <span class="badge badge-req">obligatoria</span>
+                          ) : (
+                            <span class="badge badge-opt">opcional</span>
+                          )}
+                        </div>
+                      </td>
+                      <td class="muted hv-notes">
+                        {(r.notes || '').slice(0, 120)}
+                        {(r.notes || '').length > 120 ? '…' : ''}
+                      </td>
+                      <td>
+                        {r.apk_path ? (
+                          <a class="hv-apk" href={'/' + r.apk_path}>
+                            <span class="hv-apk-name">⬇ {r.apk_path.split('/').pop()}</span>
+                            <span class="hv-apk-size">{fmtSize(r.apk_size)}</span>
+                          </a>
+                        ) : (
+                          <span class="muted">—</span>
+                        )}
+                      </td>
+                      <td class="muted hv-date">
+                        {r.published_at ? String(r.published_at).replace('T', ' ').slice(0, 16) : ''}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </section>
+    </main>
+
+    <script>
+      const $ = (id: string) => document.getElementById(id)!;
+
+      // ---------- Vista previa en vivo ----------
+      function renderNotes() {
+        const raw = ($('inNotes') as HTMLTextAreaElement).value.trim();
+        const ul = $('pvNotes');
+        ul.innerHTML = '';
+        if (!raw) {
+          ul.innerHTML = '<li class="muted">Escribe las novedades…</li>';
+          return;
+        }
+        raw
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 6)
+          .forEach((line) => {
+            const li = document.createElement('li');
+            li.textContent = line.replace(/^-\s*/, '');
+            ul.appendChild(li);
+          });
+      }
+      function syncPreview() {
+        $('pvVersion').textContent = ($('inVersion') as HTMLInputElement).value || '—';
+        $('pvTitle').textContent =
+          ($('inTitle') as HTMLInputElement).value.trim() || '🔥 NUEVA VERSIÓN DISPONIBLE';
+        const optional = !($('inMandatory') as HTMLInputElement).checked;
+        ($('pvLater') as HTMLElement).hidden = !optional;
+        $('mandatoryHint').textContent = optional ? 'Opcional' : 'Obligatoria';
+      }
+      $('inNotes').addEventListener('input', renderNotes);
+      $('inVersion').addEventListener('input', syncPreview);
+      $('inTitle').addEventListener('input', syncPreview);
+      $('inMandatory').addEventListener('change', syncPreview);
+      renderNotes();
+      syncPreview();
+
+      // Simulación de descarga en la preview: el botón se oculta y la barra de progreso ocupa
+      // su lugar (misma lógica que showUpdateAvailablePopup en MainActivity — no hay texto
+      // "Descargando…", solo la barra y el porcentaje).
+      let pvTimer: any = null;
+      $('pvBtn').addEventListener('click', () => {
+        clearInterval(pvTimer);
+        const actions = $('pvActions') as HTMLElement;
+        const wrap = $('pvProgressWrap') as HTMLElement;
+        actions.hidden = true;
+        wrap.hidden = false;
+        let p = 0;
+        pvTimer = setInterval(() => {
+          p += 2 + Math.random() * 5;
+          if (p >= 100) {
+            p = 100;
+            clearInterval(pvTimer);
+            $('pvLabel').textContent = 'Instalando…';
+            setTimeout(() => {
+              wrap.hidden = true;
+              actions.hidden = false;
+              syncPreview();
+              ($('pvFill') as HTMLElement).style.width = '0%';
+              $('pvLabel').textContent = '0%';
+            }, 1600);
+          }
+          ($('pvFill') as HTMLElement).style.width = p + '%';
+          $('pvLabel').textContent = Math.round(p) + '%';
+        }, 90);
+      });
+
+      // ---------- Selector de archivo ----------
+      $('inApk').addEventListener('change', () => {
+        const f = ($('inApk') as HTMLInputElement).files?.[0];
+        const face = $('fileFace');
+        if (f) {
+          face.textContent = f.name + '  (' + (f.size / 1048576).toFixed(1) + ' MB)';
+          face.classList.add('has-file');
+        } else {
+          face.textContent = 'Arrastra o elige el archivo .apk…';
+          face.classList.remove('has-file');
+        }
+      });
+
+      // ---------- Validación en vivo ----------
+      const minCode = Number(($('inCode') as HTMLInputElement).min) - 1;
+      function validate(): boolean {
+        let ok = true;
+        const v = ($('inVersion') as HTMLInputElement).value.trim();
+        const c = Number(($('inCode') as HTMLInputElement).value);
+        const setErr = (id: string, inputId: string, msg: string) => {
+          $(id).textContent = msg;
+          ($(inputId) as HTMLElement).classList.toggle('invalid', !!msg);
+          if (msg) ok = false;
+        };
+        setErr('errVersion', 'inVersion', /^[0-9]+(\.[0-9]+)*$/.test(v) ? '' : 'Formato inválido (ej. 1.0.1).');
+        setErr('errCode', 'inCode', c > minCode ? '' : `Debe ser mayor que ${minCode}.`);
+        return ok;
+      }
+      ['inVersion', 'inCode'].forEach((id) => $(id).addEventListener('input', validate));
+
+      // ---------- Subida real con progreso ----------
+      ($('publishForm') as HTMLFormElement).addEventListener('submit', (e) => {
+        e.preventDefault();
+        const errBox = $('pubError') as HTMLElement;
+        const okBox = $('pubOk') as HTMLElement;
+        errBox.hidden = okBox.hidden = true;
+
+        const f = ($('inApk') as HTMLInputElement).files?.[0];
+        if (!f || !f.name.toLowerCase().endsWith('.apk')) {
+          errBox.textContent = 'Elige un archivo .apk';
+          errBox.hidden = false;
+          return;
+        }
+        if (!validate()) {
+          errBox.textContent = 'Revisa los campos marcados.';
+          errBox.hidden = false;
+          return;
+        }
+
+        const fd = new FormData($('publishForm') as HTMLFormElement);
+        fd.set('mandatory', ($('inMandatory') as HTMLInputElement).checked ? '1' : '0');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/publish');
+        ($('uploadZone') as HTMLElement).hidden = false;
+        ($('btnPublish') as HTMLButtonElement).disabled = true;
+
+        xhr.upload.onprogress = (ev) => {
+          if (!ev.lengthComputable) return;
+          const p = Math.round((ev.loaded / ev.total) * 100);
+          ($('upFill') as HTMLElement).style.width = p + '%';
+          $('upLabel').textContent = p + '%' + (p === 100 ? ' — procesando…' : '');
+        };
+        xhr.onload = () => {
+          ($('btnPublish') as HTMLButtonElement).disabled = false;
+          let res: any = null;
+          try {
+            res = JSON.parse(xhr.responseText);
+          } catch {}
+          if (res && res.ok) {
+            okBox.textContent =
+              '✔ Versión ' + res.versionName + (res.mandatory ? ' (obligatoria)' : ' (opcional)') +
+              ' publicada. Los teléfonos la verán al abrir la app.';
+            okBox.hidden = false;
+            setTimeout(() => location.reload(), 1500);
+          } else {
+            errBox.textContent = (res && res.error) || 'Error del servidor (HTTP ' + xhr.status + ').';
+            errBox.hidden = false;
+            ($('uploadZone') as HTMLElement).hidden = true;
+          }
+        };
+        xhr.onerror = () => {
+          ($('btnPublish') as HTMLButtonElement).disabled = false;
+          errBox.textContent = 'Fallo de red subiendo el APK.';
+          errBox.hidden = false;
+        };
+        xhr.send(fd);
+      });
+    </script>
+  </body>
+</html>
